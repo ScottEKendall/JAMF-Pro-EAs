@@ -1,57 +1,65 @@
-#!/bin/sh
+#!/bin/zsh
 #Written by Ben Whitis - 08/11/2022
+#Updated by Scott Kendall - 07/18/2025
+
 #Updated 11/29/2023 - use dscl to identify user home directory for scenarios where loggedInUser is an alias
 #Updated 10/10/2024 - added support for platformSSO referencing @robjschroeder's EA
+#updated 07/18/2025 - added routine for multiuser macs
 
-#get user
-loggedInUser=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /loginwindow/ { print $3 }' )
-if [[ -z "$loggedInUser" ]]; then
-  echo "<result>No User Logged In</result>"
-  exit 0
-fi
-#get user home directory
-userHome=$(dscl . read "/Users/$loggedInUser" NFSHomeDirectory | awk -F ' ' '{print $2}')
+run_for_each_user() {
+    local user="$1"
+    local userHome
+    local platformStatus
+    local plist
 
-#check if registered via PSSO: 
-platformStatus=$( su $loggedInUser -c "app-sso platform -s" | grep 'registration' | /usr/bin/awk '{ print $3 }' | sed 's/,//' )
-if [[ "${platformStatus}" == "true" ]]; then
-  #Check if jamfAAD registered too
-  psso_AAD_ID=$(defaults read  "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" have_an_Azure_id 2>/dev/null)
-  if [[ $psso_AAD_ID -eq "1" ]]; then
-    #jamfAAD ID exists
-    echo "<result>Registered with Platform SSO - $userHome</result>"
-    exit 0
-  fi
-  #PSSO registered but not jamfAAD registered
-  echo "<result>Platform SSO registered but AAD ID not acquired for user home: $userHome</result>"
-  exit 0
-fi
+    # More efficient user home directory retrieval in zsh
+    userHome=$(dscl . -read "/Users/$user" NFSHomeDirectory | cut -d' ' -f2)
 
-#check if wpj private key is present
-WPJKey=$(security dump "$userHome/Library/Keychains/login.keychain-db" | grep MS-ORGANIZATION-ACCESS)
-if [ ! -z "$WPJKey" ]
-then
-  #WPJ key is present
-  #check if jamfAAD plist exists
-  plist="$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist"
-  if [ ! -f "$plist" ]; then
-    #plist doesn't exist
-      echo "<result>WPJ Key present, JamfAAD PLIST missing from user home: $userHome</result>"
-      exit 0
-  fi
+    # Platform SSO registration check with zsh-optimized parsing
+    platformStatus=$(su "$user" -c "app-sso platform -s" 2>/dev/null | awk '/registration/ {gsub(/,/, ""); print $3}')
 
-  #PLIST exists. Check if jamfAAD has acquired AAD ID
-  AAD_ID=$(defaults read  "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" have_an_Azure_id)
-  if [[ $AAD_ID -eq "1" ]]; then
-    #jamfAAD ID exists
-    echo "<result>Registered - $userHome</result>"
-    exit 0
-  fi
+    # Zsh-specific parameter expansion and conditional checks
+    if [[ "$platformStatus" == "true" ]]; then
+        # Simplified check for jamfAAD registration
+        if [[ -f "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" ]] && 
+           defaults read "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" have_an_Azure_id &>/dev/null; then
+            retval+="Registered with Platform SSO - $userHome"
+            return 0
+        fi
+        retval+="Platform SSO registered but AAD ID not acquired for user home: $userHome"
+        return 0
+    fi
 
-  #WPJ is present but no AAD ID acquired:
-  echo "<result>WPJ Key Present. AAD ID not acquired for user home: $userHome</result>"
-  exit 0
-fi
+    # WPJ key check with zsh parameter expansion
+    if security dump "$userHome/Library/Keychains/login.keychain-db" | grep -q MS-ORGANIZATION-ACCESS; then
+        plist="$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist"
+        
+        # Zsh file test and plist check
+        if [[ ! -f "$plist" ]]; then
+            retval+="WPJ Key present, JamfAAD PLIST missing from user home: $userHome"
+            return 0
+        fi
 
-#no wpj key
-echo "<result>Not Registered for user home $userHome</result>"
+        # Check AAD ID acquisition
+        if defaults read "$plist" have_an_Azure_id &>/dev/null; then
+            retval+="Registered - $userHome"
+            return 0
+        fi
+
+        retval+="WPJ Key Present. AAD ID not acquired for user home: $userHome"
+        return 0
+    fi
+
+    # No registration found
+    retval+="Not Registered for user home $userHome"
+}
+# Main Script
+declare retval=""
+declare userAccounts=($(dscl . list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root'| grep -v 'localmgr' ))
+
+for user in $userAccounts; do
+  run_for_each_user $user
+  retval+="
+"
+done
+echo "<result>$retval</result>"

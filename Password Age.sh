@@ -1,45 +1,34 @@
 #!/bin/zsh
-#
-# by: Scott Kendall
-#
-# Written: 04/17/2025
-# Last updated: 04/17/2025
 
-# Script to populate /Library/Managed Preferences/com.gianteagle.jss file with uses EntraID password info
-# 
-# 1.0 - Initial code
-#
+declare retval=""
+declare userAccounts=($(dscl . list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root'| grep -v 'localmgr' ))
+declare EntraCount=${#userAccounts[@]}
 
-JSS_FILE="/Library/Managed Preferences/com.gianteagle.jss.plist"
+# Directory location of where the password info is kept
+declare SUPPORT_DIR="Library/Application Support"
+# Extension of file(s) to look for
+declare ENTRA_FILE="com.GiantEagleEntra.plist"
 
-function duration_in_days ()
+function run_for_each_user ()
 {
-    # PURPOSE: Calculate the difference between two dates
-    # RETURN: days elapsed
-    # EXPECTED: 
-    # PARMS: $1 - oldest date 
-    #        $2 - newest date
-    local start end
-    calendar_scandate $1        
-    start=$REPLY        
-    calendar_scandate $2        
-    end=$REPLY        
-    echo $(( ( end - start ) / ( 24 * 60 * 60 ) ))
-}
-####################################################################################################
-#
-# Main Script
-#
-####################################################################################################
-autoload 'calendar_scandate'
-passwordExpireDate=$(/usr/libexec/plistbuddy -c "print PasswordLastChanged" $JSS_FILE 2>&1)
-curUser=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /loginwindow/ { print $3 }' )
+    user_dir="/Users/$1/$SUPPORT_DIR/$ENTRA_FILE"
 
-if [[ $passwordExpireDate == *"Does Not Exist"* || -z $passwordExpireDate ]]; then
-    # Not populated yet, so fall back to the local login password change
-    passwordAge=$(expr $(expr $(date +%s) - $(dscl . read /Users/${curUser} | grep -A1 passwordLastSetTime | grep real | awk -F'real>|</real' '{print $2}' | awk -F'.' '{print $1}')) / 86400)
-else
-    #found the key, so determine the days based off of that
-    passwordAge=$(duration_in_days $passwordExpireDate $(date))
-fi
-echo "<result>$passwordAge</result>"
+    # Extract the PasswordLastChanged field
+    password_age=$(/usr/libexec/PlistBuddy -c "Print :PasswordAge" "$user_dir" 2>/dev/null)
+    
+    [[ $? -ne 0 ]] && exit 1     # Check if the field was found
+    if [[ "$EntraCount" -eq 1 ]]; then #only one user on the system
+        retval+=$password_age
+    else 
+        retval+="$1: $password_age"
+    fi
+}
+
+# Main Script
+
+for user in $userAccounts; do
+  run_for_each_user $user
+  retval+="
+"
+done
+echo "<result>$retval</result>"
