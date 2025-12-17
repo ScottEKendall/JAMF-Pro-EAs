@@ -18,7 +18,21 @@ run_for_each_user() {
 
     #Check if registered via PSSO/SSOe first
     ssoStatus=$(/bin/launchctl asuser $( /usr/bin/id -u $user ) /Library/Application\ Support/JAMF/Jamf.app/Contents/MacOS/Jamf\ Conditional\ Access.app/Contents/MacOS/Jamf\ Conditional\ Access getPSSOStatus | /usr/bin/sed -E 's/AnyHashable\(|\)//g' | /usr/bin/tr ',' '\n')
-    if [[ $ssoStatus == *"primary_registration_metadata_device_id"* ]]; then
+    platformStatus=$(su "$user" -c "app-sso platform -s" 2>/dev/null | awk '/registration/ {gsub(/,/, ""); print $3}')
+
+    # Zsh-specific parameter expansion and conditional checks
+    if [[ "$platformStatus" == "true" ]]; then
+        # Simplified check for jamfAAD registration
+        if [[ -f "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" ]] && 
+           defaults read "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" have_an_Azure_id &>/dev/null; then
+            retval+="Registered with Platform SSO - $userHome"
+            return 0
+        fi
+        retval+="Platform SSO registered but AAD ID not acquired for user home: $userHome"
+        return 0
+
+    else
+        if  [[ $ssoStatus == *"primary_registration_metadata_device_id"* ]]; then
         #Check if jamfAAD registered too
         AAD_ID=$(/usr/bin/defaults read  "$userHome/Library/Preferences/com.jamf.management.jamfAAD.plist" have_an_Azure_id)
         if [[ $AAD_ID -eq "1" ]]; then
